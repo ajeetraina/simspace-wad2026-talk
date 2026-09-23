@@ -412,13 +412,24 @@ alt: "Docker AI Governance — a coding agent runs as a container inside a micro
 chrome: false
 -->
 
-Note: This is **Docker AI Governance** around a coding agent. When an agent reads, writes, and *executes* code, containers alone aren't enough — the sandbox adds a **hard hypervisor boundary**, the same isolation cloud providers use between customers. The AI coding agent runs as a container *inside a microVM*. Every external action goes through governance: a **Filesystem Manager** bind-mounts only the source directory you allow; a **Network Proxy** brokers outbound traffic with secrets injected on the way out; an **MCP Gateway** brokers tool calls, each MCP server itself in a microVM. And it's agent-agnostic — Claude Code, Codex, Copilot, Cursor, Gemini, Droid, Kiro, OpenCode, Docker Agent. The boundary sits *below* whichever harness you use.
+Note: This is **Docker AI Governance** around a coding agent. When an agent reads, writes, and *executes* code, containers alone aren't enough — the sandbox adds a **hard hypervisor boundary**, the same isolation cloud providers use between customers. The AI coding agent runs as a container *inside a microVM*. Every external action goes through governance: a **Filesystem Manager** bind-mounts only the source directory you allow; a **Network Proxy** brokers outbound traffic with secrets injected on the way out; an **MCP Gateway** brokers tool calls, each MCP server itself in a microVM. And it's agent-agnostic — Claude Code, Codex, Copilot, Cursor, Gemini, Droid, Kiro, OpenCode, Docker Agent. The boundary sits *below* whichever harness you use. Zoom out, and this is what the whole governance layer looks like.
 
 ---
 
 <!--
 layout: image
 image: assets/slide-39.webp
+alt: "Docker AI Governance — one policy layer for AI agents, authored centrally and enforced from laptop to cloud; one admin console for policy, audit to SIEM, identity mapping and cost; Docker governs the tool-call path via a Unified MCP Gateway and the code-execution path via microVM-sandboxed execution; works with any agent and any MCP, on a trusted Docker Hardened Images base"
+chrome: false
+-->
+
+Note: Here's the entire governance story on one slide. **One policy layer for AI agents** — authored centrally, enforced everywhere from laptop to cloud, for *any* model and *any* agent: Claude Code, Copilot, Cursor, Codex, custom and internal agents, Claws. The key property on the left: Docker is **vendor-agnostic** — it works with all your agents, any harness. In the middle, **one admin console governs everything**: **Policy** (allow / deny / ask, deny by default), **Audit → SIEM** (Splunk, Dynatrace, searchable in Docker Cloud), **Identity Mapping** (SAML / SCIM per org and team), and **Cost** visibility coming soon. And Docker governs the two paths that matter: the **tool-call path** through a **Unified MCP Gateway** — server registry with allow/deny per server and tool, auth and secrets per MCP server, every call authorized and logged; and the **code-execution path** through **MicroVM-Sandboxed Execution** — network allow/deny, filesystem scope, no host access, ephemeral by default, credentials injected. On the right, the tools agents can reach — the Docker MCP ecosystem (Jira, Slack, GitHub, 100-plus MCPs, cloud infra) and external systems (LLM providers, EC2, Kubernetes) — *all* routed through the gateway. Underneath it all, the **trusted base layer**: Docker Hardened Images and Docker Hub. Five properties to remember: **zero-trust execution** (agents never touch host or prod), **one console for three governed areas** (network, filesystem, MCP), **no migration** (it runs on the machine devs already use), **audit streams to your SIEM**, and **local-to-cloud parity** — the same policy everywhere. That's the picture; now let me show you how it actually runs on your machine.
+
+---
+
+<!--
+layout: image
+image: assets/slide-40.webp
 alt: "Sandboxes (Experimental) — run agents in isolation rather than on your bare machine; sbx run claude with a deny-all network policy and a mirrored workspace"
 chrome: false
 -->
@@ -429,7 +440,7 @@ Note: In practice it's one command: `sbx run claude`. It starts the agent in an 
 
 <!--
 layout: image
-image: assets/slide-40.webp
+image: assets/slide-41.webp
 alt: "Sandbox architecture — workspace directories, network policies, and secrets feed an agent container in a microVM-based sandbox on the host, with a network proxy mediating all access to external systems"
 chrome: false
 -->
@@ -440,7 +451,7 @@ Note: The simple mental model. On the **host machine**, three inputs — **works
 
 <!--
 layout: image
-image: assets/slide-41.webp
+image: assets/slide-42.webp
 alt: "Agent with a Sandbox — sbx microVM with its own daemon and network, host read-only, FROM dhi.io/node queried before writing, signed MCP tools only; result 0C 0H 0M 0L CVEs, 211 packages, SBOM attached, signed, non-root"
 chrome: false
 -->
@@ -451,7 +462,7 @@ Note: Here's the **after** picture — the same prompt, "containerize my app," i
 
 <!--
 layout: image
-image: assets/slide-42.webp
+image: assets/slide-43.webp
 alt: "Every agent runs behind five layers — Hypervisor, Network, Docker Engine, Workspace, Credentials — with a host proxy enforcing policy and injecting API keys"
 chrome: false
 -->
@@ -462,23 +473,12 @@ Note: To be precise about *why* the after-picture holds, every agent runs behind
 
 <!--
 layout: image
-image: assets/slide-43.webp
+image: assets/slide-44.webp
 alt: "One org policy, every sandbox follows it — network, filesystem, and MCP rules written as Cedar policies in Docker Home; deny wins, default deny, org rules can't be widened locally; every allow and deny is audited"
 chrome: false
 -->
 
-Note: And the policy is set **once**. Admins write rules in Docker Home — for the whole org or a team — and **every sandbox follows them**. Three domains: **Network** — where can it connect? hosts, IP ranges, ports. **Filesystem** — what can it mount, read, or write? **MCP** — which tools can it call? written as **Cedar policies**. The evaluation model is strict and predictable: **deny wins** — any matching deny blocks the request; **default deny** — anything not explicitly allowed is blocked; and **org first** — local allow rules can't widen what the org set. And every allow and deny is recorded in the **audit log**, ready to forward to your SIEM. That's your answer to "who approved it" — not a person's memory, a log line tied to the agent and the rule. Let me pull the whole picture together on one slide.
-
----
-
-<!--
-layout: image
-image: assets/slide-44.webp
-alt: "Docker AI Governance — one policy layer for AI agents, authored centrally and enforced from laptop to cloud; one admin console for policy, audit to SIEM, identity mapping and cost; Docker governs the tool-call path via a Unified MCP Gateway and the code-execution path via microVM-sandboxed execution; works with any agent and any MCP, on a trusted Docker Hardened Images base"
-chrome: false
--->
-
-Note: Here's the entire governance story on one slide. **One policy layer for AI agents** — authored centrally, enforced everywhere from laptop to cloud, for *any* model and *any* agent: Claude Code, Copilot, Cursor, Codex, custom and internal agents, Claws. The key property on the left: Docker is **vendor-agnostic** — it works with all your agents, any harness. In the middle, **one admin console governs everything**: **Policy** (allow / deny / ask, deny by default), **Audit → SIEM** (Splunk, Dynatrace, searchable in Docker Cloud), **Identity Mapping** (SAML / SCIM per org and team), and **Cost** visibility coming soon. And Docker governs the two paths that matter: the **tool-call path** through a **Unified MCP Gateway** — server registry with allow/deny per server and tool, auth and secrets per MCP server, every call authorized and logged; and the **code-execution path** through **MicroVM-Sandboxed Execution** — network allow/deny, filesystem scope, no host access, ephemeral by default, credentials injected. On the right, the tools agents can reach — the Docker MCP ecosystem (Jira, Slack, GitHub, 100-plus MCPs, cloud infra) and external systems (LLM providers, EC2, Kubernetes) — *all* routed through the gateway. Underneath it all, the **trusted base layer**: Docker Hardened Images and Docker Hub. Five properties to remember: **zero-trust execution** (agents never touch host or prod), **one console for three governed areas** (network, filesystem, MCP), **no migration** (it runs on the machine devs already use), **audit streams to your SIEM**, and **local-to-cloud parity** — the same policy everywhere. This is the whole talk in one frame. Let me close.
+Note: And the policy is set **once**. Admins write rules in Docker Home — for the whole org or a team — and **every sandbox follows them**. Three domains: **Network** — where can it connect? hosts, IP ranges, ports. **Filesystem** — what can it mount, read, or write? **MCP** — which tools can it call? written as **Cedar policies**. The evaluation model is strict and predictable: **deny wins** — any matching deny blocks the request; **default deny** — anything not explicitly allowed is blocked; and **org first** — local allow rules can't widen what the org set. And every allow and deny is recorded in the **audit log**, ready to forward to your SIEM. That's your answer to "who approved it" — not a person's memory, a log line tied to the agent and the rule. Let me bring it home.
 
 ---
 
