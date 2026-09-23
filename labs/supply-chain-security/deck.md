@@ -467,13 +467,24 @@ alt: "One org policy, every sandbox follows it — network, filesystem, and MCP 
 chrome: false
 -->
 
-Note: And the policy is set **once**. Admins write rules in Docker Home — for the whole org or a team — and **every sandbox follows them**. Three domains: **Network** — where can it connect? hosts, IP ranges, ports. **Filesystem** — what can it mount, read, or write? **MCP** — which tools can it call? written as **Cedar policies**. The evaluation model is strict and predictable: **deny wins** — any matching deny blocks the request; **default deny** — anything not explicitly allowed is blocked; and **org first** — local allow rules can't widen what the org set. And every allow and deny is recorded in the **audit log**, ready to forward to your SIEM. That's your answer to "who approved it" — not a person's memory, a log line tied to the agent and the rule. Let me bring it home.
+Note: And the policy is set **once**. Admins write rules in Docker Home — for the whole org or a team — and **every sandbox follows them**. Three domains: **Network** — where can it connect? hosts, IP ranges, ports. **Filesystem** — what can it mount, read, or write? **MCP** — which tools can it call? written as **Cedar policies**. The evaluation model is strict and predictable: **deny wins** — any matching deny blocks the request; **default deny** — anything not explicitly allowed is blocked; and **org first** — local allow rules can't widen what the org set. And every allow and deny is recorded in the **audit log**, ready to forward to your SIEM. That's your answer to "who approved it" — not a person's memory, a log line tied to the agent and the rule. Let me pull the whole picture together on one slide.
 
 ---
 
 <!--
 layout: image
 image: assets/slide-44.webp
+alt: "Docker AI Governance — one policy layer for AI agents, authored centrally and enforced from laptop to cloud; one admin console for policy, audit to SIEM, identity mapping and cost; Docker governs the tool-call path via a Unified MCP Gateway and the code-execution path via microVM-sandboxed execution; works with any agent and any MCP, on a trusted Docker Hardened Images base"
+chrome: false
+-->
+
+Note: Here's the entire governance story on one slide. **One policy layer for AI agents** — authored centrally, enforced everywhere from laptop to cloud, for *any* model and *any* agent: Claude Code, Copilot, Cursor, Codex, custom and internal agents, Claws. The key property on the left: Docker is **vendor-agnostic** — it works with all your agents, any harness. In the middle, **one admin console governs everything**: **Policy** (allow / deny / ask, deny by default), **Audit → SIEM** (Splunk, Dynatrace, searchable in Docker Cloud), **Identity Mapping** (SAML / SCIM per org and team), and **Cost** visibility coming soon. And Docker governs the two paths that matter: the **tool-call path** through a **Unified MCP Gateway** — server registry with allow/deny per server and tool, auth and secrets per MCP server, every call authorized and logged; and the **code-execution path** through **MicroVM-Sandboxed Execution** — network allow/deny, filesystem scope, no host access, ephemeral by default, credentials injected. On the right, the tools agents can reach — the Docker MCP ecosystem (Jira, Slack, GitHub, 100-plus MCPs, cloud infra) and external systems (LLM providers, EC2, Kubernetes) — *all* routed through the gateway. Underneath it all, the **trusted base layer**: Docker Hardened Images and Docker Hub. Five properties to remember: **zero-trust execution** (agents never touch host or prod), **one console for three governed areas** (network, filesystem, MCP), **no migration** (it runs on the machine devs already use), **audit streams to your SIEM**, and **local-to-cloud parity** — the same policy everywhere. This is the whole talk in one frame. Let me close.
+
+---
+
+<!--
+layout: image
+image: assets/slide-45.webp
 alt: "Thank you — find us at the Docker booth to talk about hardened base images, gated builds, and AI governance"
 chrome: false
 -->
@@ -484,7 +495,7 @@ Note: Thank you. If any of this is live for you right now, come find us at the *
 
 <!--
 layout: image
-image: assets/slide-45.webp
+image: assets/slide-46.webp
 alt: "Key Takeaways — evidence not review; policy as gate not document; put the boundary below the harness; autonomy is the goal, bounded consequences let you grant it"
 chrome: false
 -->
