@@ -1,0 +1,37 @@
+# A SLIDE DECK — same manifest format as a lab, with `kind: slides`.
+# The WeAreDevelopers 2026 talk "Supply Chain Security When Agents Write the
+# Code". Every page is a full-bleed image exported from the master deck, so the
+# branding matches exactly; speaker notes travel with each slide as `Note:`.
+# Deploys through the repo's Pages workflow and appears as a card on the landing
+# page.
+kind: slides
+
+title: "Supply Chain Security When Agents Write the Code"
+description: "Why agents need guardrails, the four questions every agent-driven change must answer — Evidence, Baseline, Gate, Boundary — and the Docker stack that enforces them."
+
+catalog:
+  title: "Supply Chain Security When Agents Write the Code — Slides"
+  description: "Agents write code at every stage now. Evidence, Baseline, Gate, Boundary — the governance model and the Docker tools that make it real."
+  icon: slideshow
+  tags: ["ai governance", "supply chain", "sbom", "hardened images", "scout", "sandboxes", "slides"]
+  estimatedMinutes: 30
+  # Deck first on the landing page.
+  order: 1
+
+version: "1.0.0"
+
+# Default surface for every slide: the dark navy "Docker / Next" template look,
+# matching the deck's deep-blue title and section slides.
+theme: dark
+
+# Branded chrome, set once. White mark for the dark surface.
+brand:
+  logo: assets/docker-logo-white.svg
+  eyebrow: "Supply Chain Security When Agents Write the Code"
+  source: "DOCKER / NEXT · WEAREDEVELOPERS 2026"
+
+# `slides:` is an alias of `sections:` — one file for the whole deck, split into
+# individual slides on a `---` line.
+slides:
+  - title: "Supply Chain Security When Agents Write the Code"
+    contentPath: deck.md
