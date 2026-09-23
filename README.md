@@ -10,21 +10,31 @@ Developer Advocate at Docker — presented as an in-browser
 > (SBOM/VEX/SLSA), Docker Hardened Images, Scout build policies, and Docker
 > Sandboxes + AI Governance.
 
-The companion hands-on lab lives in
+The deck is followed by three hands-on labs (fully simulated — nothing to
+install), sourced from
 [`ajeetraina/simspace-ai-governance-demo`](https://github.com/ajeetraina/simspace-ai-governance-demo).
 
 ## What's here
 
+The landing page shows the deck first, then the labs in teaching order:
+
 ```
-labs/supply-chain-security/
-  labspace.yaml     # deck manifest (kind: slides, brand, theme)
-  deck.md           # 46 full-bleed slides + speaker notes (Note:)
-  assets/           # slide-01..46.webp + Docker logos
+labs/
+  supply-chain-security/   # order 1 — the talk (kind: slides, 45 slides + notes)
+  an-agent-built-this/     # order 2 — an AI agent containerises the app well,
+                           #           then runs ungoverned on your host
+  find-vulnerabilities/    # order 3 — measure the image with Docker Scout,
+                           #           swap in a Docker Hardened Image, re-scan
+  ai-governance/           # order 4 — secure the agentic stack: Scout → DHI →
+                           #           policy-gated CI, then sandbox network,
+                           #           filesystem, credential & MCP governance
 ```
 
-Each slide is a full-bleed image exported from the master deck, so branding
+Each deck slide is a full-bleed image exported from the master deck, so branding
 matches exactly. The talk track for every slide lives inline as a `Note:` block —
-press **`S`** in the presenter to open the speaker-notes view.
+press **`S`** in the presenter to open the speaker-notes view. The labs are
+scripted (`simulator.yaml`), so every attendee sees the same result with no real
+Docker, backend, or network required.
 
 ## Preview locally
 

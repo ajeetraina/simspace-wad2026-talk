@@ -1,0 +1,1445 @@
+version: "2.0"
+
+metadata:
+  id: ai-governance
+  title: "Docker AI Governance"
+  summary: >
+    Define once, enforce everywhere. Prove how org AI Governance policies stop a
+    rogue agent's network, filesystem, credential, and MCP attacks - all simulated.
+
+# In-memory state. Scenarios read it in `when.state` and write it in `then.state`.
+# The `governance.active`, `policy.denyExfil`, and `policy.denyCreds` flags are
+# also wired to Settings-dialog toggles (see `controls:` below) so a learner can
+# flip a policy off and watch enforcement disappear.
+state:
+  # Learner's Docker Hub org. The markdown `$$org$$` variable (set by the prompt) is
+  # a separate, markdown-only mechanism the engine does NOT see, so terminal output
+  # uses this state value instead (templated as {{ state.org }}). This default is
+  # overwritten when `sbx login --org $$org$$` runs (see the sbx-login-org scenario),
+  # bridging the learner's chosen org into every later output. Matches the
+  # `variables.org` default in labspace.yaml until then.
+  org: "your-org"
+  governance:
+    active: true # org AI Governance policy is in effect and synced to this machine
+  policy:
+    denyExfil: true # network rule: deny exfiltration (paste.ee, pastebin, slack hooks)
+    denyCreds: true # filesystem rule: deny credentials (~/.ssh, ~/.aws, ~/.docker)
+  secret:
+    anthropic: false # a provider key stored in the OS keychain
+  sandbox:
+    inside: false # are we currently at a shell prompt inside a running sandbox?
+  mcp:
+    enabled: false # SBX_MCP_URL exported → `sbx mcp` subtree unlocked
+    hasServers: false # at least one server registered
+    attached: "" # server attached to the current agent run
+  catalog:
+    cloned: false
+    containerised: false # agent wrote a Dockerfile and built the image
+    hardened: false # agent switched to a Docker Hardened Image base
+  signing:
+    configured: false # cosign key pair generated (CI signing step)
+
+settings:
+  pace:
+    pull: 700 # simulated image pull
+    build: 900 # simulated build step
+    scan: 1200 # simulated Scout vulnerability analysis
+    sync: 600 # simulated policy sync
+    boot: 800 # simulated microVM boot
+
+defaults:
+  unmatched:
+    stderr: ["command not found - this command isn't part of the lab."]
+    exit: 1
+
+# Settings-dialog toggles (the gear next to Reset). These are the in-lab analog of
+# the switches an admin flips in app.docker.com → AI governance. Turn one OFF, then
+# re-run the demos to watch enforcement disappear.
+controls:
+  - id: governance
+    label: "AI Governance - enforced by your org"
+    description: "The master switch. Off = no org policy synced (like an ungoverned laptop)."
+    state: governance.active
+    enabled: true
+    disabled: false
+  - id: deny-exfiltration
+    label: "Network rule: deny exfiltration"
+    description: "Blocks paste.ee, pastebin.com, hooks.slack.com. Off = the paste site is reachable."
+    state: policy.denyExfil
+    enabled: true
+    disabled: false
+  - id: deny-credentials
+    label: "Filesystem rule: deny credentials"
+    description: "Blocks mounting ~/.ssh, ~/.aws, ~/.docker. Off = the sandbox can mount your keys."
+    state: policy.denyCreds
+    enabled: true
+    disabled: false
+
+scenarios:
+  # ===========================================================================
+  # Environment: versions, login
+  # ===========================================================================
+  - id: sbx-version
+    when:
+      command: [sbx, version]
+    then:
+      output: ["sbx version: v0.38.0-rc1-57-gde89a8dd6 de89a8dd67fc899f48b3d547b4790021918de7e2"]
+
+  # The markdown Run button sends `sbx login --org <your org>` (from the $$org$$
+  # variable set by the prompt). Capturing it here is the ONLY bridge that gets the
+  # learner's org into simulator state, so every later `{{ state.org }}` in output
+  # (policy ls, sync headers, the API) reflects it. Must precede the plain fallback.
+  - id: sbx-login-org
+    when:
+      command: [sbx, login]
+      args: { --org: { any: true } }
+    then:
+      state: { governance.active: true, org: "{{ args.org }}" }
+      output:
+        - "Opening your browser to authenticate with Docker..."
+        - { text: "Login Succeeded", delay: sync }
+        - "Synced AI Governance policy for {{ args.org }} (cached locally)."
+
+  - id: sbx-login
+    when:
+      command: [sbx, login]
+    then:
+      state: { governance.active: true }
+      output:
+        - "Opening your browser to authenticate with Docker..."
+        - { text: "Login Succeeded", delay: sync }
+        - "Synced AI Governance policy for {{ state.org }} (cached locally)."
+
+  - id: sbx-logout
+    when:
+      command: [sbx, logout]
+    then:
+      output: ["Logged out."]
+
+  - id: docker-login
+    when:
+      command: [docker, login]
+    then:
+      output:
+        - "Authenticating with existing credentials..."
+        - "Login Succeeded"
+
+  - id: git-version
+    when:
+      command: [git]
+      args: { --version: { any: true } }
+    then:
+      output: ["git version 2.51.0"]
+
+  # ===========================================================================
+  # Section 1 - The Problem Statement: ask the agent to find your secrets.
+  # `claude -p "...credentials..."` routes the prompt text to these agent
+  # scenarios; the result depends on whether we're inside a sandbox yet.
+  # ===========================================================================
+  # Inside a sandbox the search comes up empty (secrets were never mounted).
+  - id: agent-find-secrets-inside
+    when:
+      agent: true
+      promptContains: [credentials]
+      state: { sandbox.inside: true }
+    then:
+      output:
+        - "● Searching the filesystem I can see..."
+        - "I came up empty:"
+        - "  ~/.ssh        → not present in this sandbox"
+        - "  ~/.aws        → not present in this sandbox"
+        - "  ~/.docker     → not present in this sandbox"
+        - "Only the mounted workspace exists here - there are no host credentials to find."
+
+  # On the host, with no sandbox, the agent reads everything.
+  - id: agent-find-secrets-host
+    when:
+      agent: true
+      promptContains: [credentials]
+    then:
+      output:
+        - "● Searching ~/.aws, ~/.ssh, ~/.docker, ~/.config/gcloud, and *.env ..."
+        - "Found credentials in several locations:"
+        - "  ~/.aws/credentials    → AWS access key AKIA…************ + secret"
+        - "  ~/.ssh/id_ed25519     → OpenSSH private key"
+        - "  ~/.docker/config.json → registry auth token"
+        - "  ~/.config/gcloud/     → GCP OAuth credentials"
+        - "  ~/work/app/.env       → ANTHROPIC_API_KEY=sk-ant-************"
+        - "I read every one of them - nothing stopped me."
+
+  # ===========================================================================
+  # Section 2/6 - Secrets in the keychain (credential isolation)
+  # ===========================================================================
+  - id: sbx-secret-set-custom
+    when:
+      command: [sbx, secret, set-custom]
+    then:
+      output:
+        - "Enter value (input hidden): ********"
+        - "Custom secret stored (global). The proxy will inject it per matching request."
+
+  - id: sbx-secret-set
+    when:
+      command: [sbx, secret, set]
+    then:
+      state: { secret.anthropic: true }
+      output:
+        - "Enter secret value (input hidden): ****************"
+        - "Secret stored in the OS keychain (global). The sandbox will only ever see a sentinel."
+
+  - id: sbx-secret-ls-set
+    when:
+      command: [sbx, secret, ls]
+      state: { secret.anthropic: true }
+    then:
+      output:
+        - "SCOPE    NAME        VALUE"
+        - "global   anthropic   ****…****"
+
+  - id: sbx-secret-ls-empty
+    when:
+      command: [sbx, secret, ls]
+    then:
+      output: ["No secrets stored. Add one with: sbx secret set -g <provider>"]
+
+  - id: claude-setup-token
+    when:
+      command: [claude, setup-token]
+    then:
+      output:
+        - "Opening browser to authorize Claude..."
+        - "sk-ant-oat01-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  # ===========================================================================
+  # Section 3/4/9 - Launching sandboxes  (sbx run ...)
+  # Order matters: denied mounts and unallowed workdirs first, then the allow.
+  # ===========================================================================
+  # A denied EXTRA mount (e.g. ~/.ssh:ro as a second positional) fails at creation.
+  - id: sbx-run-shell-deny-mount
+    when:
+      command: [sbx, run, shell]
+      args: { 1: { any: true } }
+      state: { policy.denyCreds: true } # toggle this off in Settings → the mount succeeds
+    then:
+      output:
+        - "Creating sandbox..."
+        - { text: "ERROR: failed to create sandbox: status 403: mount policy denied:", delay: boot }
+        - "  {{ args.1 }}: action=fs:mount:read blocked by rule 'deny credentials'"
+        - "The sandbox never starts - the denied path never exists inside it."
+      exit: 1
+
+  # A workdir outside the allowed tree → default-deny at creation.
+  - id: sbx-run-shell-deny-default
+    when:
+      command: [sbx, run, shell]
+      args: { 0: { oneOf: ["/tmp/outside-workdemo", "/private/tmp/outside-workdemo"] } }
+      state: { governance.active: true } # no governance → default-deny doesn't apply
+    then:
+      output:
+        - "Creating sandbox..."
+        - { text: "ERROR: failed to create sandbox: status 403: mount policy denied:", delay: boot }
+        - "  /private/tmp/outside-workdemo: no applicable policies"
+        - "  op(action=fs:mount:write, resource=fs:path:/private/tmp/outside-workdemo)"
+        - "No allow rule covers it → default-deny. The sandbox never starts."
+      exit: 1
+
+  # An allowed workdir under ~/workdemo → sandbox starts, you're inside it.
+  - id: sbx-run-shell-allow
+    when:
+      command: [sbx, run, shell]
+    then:
+      state: { sandbox.inside: true }
+      output:
+        - "Creating sandbox..."
+        - { text: "microVM booted: own kernel, own network, only the mounted workspace visible.", delay: boot }
+        - "Outbound traffic is routed through the sbx proxy that enforces org network policy."
+        - ""
+        - "You are now INSIDE the sandbox. Try the enforcement tests, then run `exit` to leave."
+
+  # Running an agent (claude/codex/gemini) with an MCP server attached.
+  - id: sbx-run-claude-mcp
+    when:
+      command: [sbx, run, claude]
+      args: { --static-mcp: { any: true } }
+    then:
+      state: { sandbox.inside: true, mcp.attached: "{{ args.static-mcp }}" }
+      output:
+        - { text: "Creating sandbox (static MCP: {{ args.static-mcp }})...", delay: boot }
+        - "Claude Code is ready inside the sandbox. Type /mcp to list tools, or enter a prompt."
+
+  # Running an agent by name (e.g. sbx run --name catalog claude).
+  - id: sbx-run-named
+    when:
+      command: [sbx, run]
+      args: { --name: { any: true } }
+    then:
+      state: { sandbox.inside: true }
+      output:
+        - { text: "Creating sandbox '{{ args.name }}'...", delay: boot }
+        - "The workspace is bind-mounted; the sandbox has its own Docker daemon."
+        - "Claude Code is ready. Enter a task, or run `exit` to leave."
+
+  # Bare agent runs: sbx run claude . / sbx run codex . / sbx run gemini .
+  - id: sbx-run-agent
+    when:
+      command: [sbx, run]
+      args: { 0: { oneOf: [claude, codex, gemini] } }
+    then:
+      state: { sandbox.inside: true }
+      output:
+        - { text: "Creating sandbox with agent '{{ args.0 }}'...", delay: boot }
+        - "Only the current directory was mounted. The agent runs inside the microVM."
+        - "You're in the agent session. Enter a prompt, or run `exit` to leave."
+
+  - id: sbx-exec-docker-version
+    when:
+      command: [sbx, exec]
+    then:
+      output:
+        - "28.3.3"
+        - "(this is the sandbox's OWN Docker daemon - not your host's)"
+
+  - id: sbx-ls
+    when:
+      command: [sbx, ls]
+    then:
+      output:
+        - "NAME       AGENT   STATE     WORKSPACE"
+        - "catalog    claude  running   ~/workdemo/product-catalog-demo-showcase"
+
+  - id: exit-sandbox
+    when:
+      command: [exit]
+      state: { sandbox.inside: true }
+    then:
+      state: { sandbox.inside: false }
+      output: ["Sandbox stopped. The microVM and everything in it is gone."]
+
+  # ===========================================================================
+  # Inside-sandbox enforcement tests: filesystem + credentials
+  # ===========================================================================
+  - id: ls-secrets-inside
+    when:
+      command: [ls]
+      args: { 0: { oneOf: ["~/.ssh", "~/.aws"] } }
+      state: { sandbox.inside: true }
+    then:
+      output:
+        - "ls: cannot access '/root/.ssh': No such file or directory"
+        - "ls: cannot access '/root/.aws': No such file or directory"
+
+  - id: echo-api-key
+    when:
+      command: [echo]
+      args: { 0: { oneOf: ["ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"] } }
+    then:
+      output: ["ANTHROPIC_API_KEY=proxy-managed"]
+
+  # ===========================================================================
+  # Inside-sandbox enforcement tests: network (curl). URL is the first token.
+  # ===========================================================================
+  - id: curl-verbose-paste
+    when:
+      command: [curl]
+      args: { -v: { any: true } }
+    then:
+      output:
+        - "* Uses proxy env variable https_proxy == 'http://gateway.docker.internal:3128'"
+        - "> CONNECT paste.ee:443 HTTP/1.1"
+        - "< HTTP/1.0 200 OK"
+        - "* CONNECT tunnel established, response 200"
+        - "* Server certificate:"
+        - "*   subject: O=GoProxy untrusted MITM proxy Inc; CN=paste.ee"
+        - "< HTTP/1.1 403 Forbidden"
+        - ""
+        - "The sbx proxy terminated TLS itself, matched 'deny exfiltration', and returned 403."
+        - "paste.ee never received the connection."
+
+  - id: curl-anthropic
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://api.anthropic.com", "api.anthropic.com"] } }
+    then:
+      output: ["anthropic: 404"]
+
+  # paste.ee: blocked while the "deny exfiltration" rule is on; reachable when off.
+  - id: curl-paste-allowed
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://paste.ee", "paste.ee"] } }
+      state: { policy.denyExfil: false }
+    then:
+      output: ["paste.ee: 200   ← reachable! the deny-exfiltration rule is OFF"]
+
+  - id: curl-paste
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://paste.ee", "paste.ee"] } }
+    then:
+      output: ["paste.ee: 403"]
+
+  # example.com: default-deny under governance; reachable with governance off.
+  - id: curl-example-allowed
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://example.com", "example.com"] } }
+      state: { governance.active: false }
+    then:
+      output: ["example.com: 200   ← reachable! AI Governance is OFF (no default-deny)"]
+
+  - id: curl-example
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://example.com", "example.com"] } }
+    then:
+      output: ["example.com: 403"]
+
+  - id: curl-collabnix-allowed
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://collabnix.com", "collabnix.com"] } }
+      state: { governance.active: false }
+    then:
+      output: ["collabnix.com: 200   ← reachable! AI Governance is OFF"]
+
+  - id: curl-collabnix
+    when:
+      command: [curl]
+      args: { 0: { oneOf: ["https://collabnix.com", "collabnix.com"] } }
+    then:
+      output: ["collabnix.com: 403"]
+
+  # ===========================================================================
+  # Section 3 - The Policy Model / Monitoring: policy commands
+  # ===========================================================================
+  - id: sbx-policy-reset
+    when:
+      command: [sbx, policy, reset]
+    then:
+      state: { governance.active: true, policy.denyExfil: true, policy.denyCreds: true }
+      output:
+        - "Choose a default baseline: 1) Strict  2) Balanced  3) Open"
+        - "> 2 (Balanced)"
+        - { text: "Syncing policy from {{ state.org }}...", delay: sync }
+        - "[OK] Policy synced. Org rules are now active on this machine."
+
+  - id: sbx-policy-ls-inactive
+    when:
+      command: [sbx, policy, ls]
+      args: { --include-inactive: { any: true } }
+    then:
+      output:
+        - "Governance: managed by {{ state.org }}"
+        - "[OK] last synced 13:54:21"
+        - ""
+        - "PROVENANCE  APPLIES_TO  POLICY / RULE                        TYPE              DECISION  RESOURCES"
+        - "remote      all         Labspace / allow AI services         network           allow     api.anthropic.com:443"
+        - "remote      all         Labspace / allow Docker services     network           allow     *.docker.com:443"
+        - "remote      all         Labspace / deny exfiltration         network           deny      paste.ee, pastebin.com"
+        - "remote      all         Labspace / allow workdemo            filesystem:write  allow     ~/workdemo/**"
+        - "remote      all         Labspace / deny credentials          filesystem        deny      ~/.ssh/**, ~/.aws/**, ..."
+        - "local       all         default-balanced-net    [inactive]   network           allow     (corporate policy takes precedence)"
+        - "local       all         default-balanced-fs     [inactive]   filesystem        allow     (corporate policy takes precedence)"
+
+  # With AI Governance toggled OFF, there's no org header - only sbx's local
+  # defaults, which a developer CAN override. (The whole point of governance.)
+  - id: sbx-policy-ls-ungoverned
+    when:
+      command: [sbx, policy, ls]
+      state: { governance.active: false }
+    then:
+      output:
+        - "Governance: not managed (no org policy synced)"
+        - ""
+        - "NAME             TYPE        ORIGIN   DECISION   STATUS   RESOURCES"
+        - "balanced-net     network     local    allow      active   (sbx default baseline)"
+        - "balanced-fs      filesystem  local    allow      active   (sbx default baseline)"
+        - ""
+        - "These are local defaults only - nothing is enforced by your org."
+
+  - id: sbx-policy-ls
+    when:
+      command: [sbx, policy, ls]
+    then:
+      output:
+        - "Governance: managed by {{ state.org }}"
+        - "[OK] last synced 13:54:21"
+        - ""
+        - "NAME                    TYPE        ORIGIN   DECISION   STATUS   RESOURCES"
+        - "allow AI services       network     remote   allow      active   api.anthropic.com:443, api.openai.com:443"
+        - "allow Docker services   network     remote   allow      active   *.docker.com:443, *.docker.io:443"
+        - "deny exfiltration       network     remote   deny       active   paste.ee, pastebin.com, hooks.slack.com"
+        - "allow workdemo          filesystem  remote   allow      active   ~/workdemo/**"
+        - "deny credentials        filesystem  remote   deny       active   ~/.ssh/**, ~/.aws/**, ~/.docker/config.json"
+        - ""
+        - "Local rules are suppressed under governance. Add --include-inactive to see them."
+
+  - id: sbx-policy-log-json
+    when:
+      command: [sbx, policy, log]
+      args: { --json: { any: true } }
+    then:
+      output:
+        - '{"sandbox":"catalog","host":"api.anthropic.com","decision":"allow","rule":"allow AI services","count":42}'
+        - '{"sandbox":"catalog","host":"paste.ee","decision":"deny","rule":"deny exfiltration","count":1}'
+        - '{"sandbox":"catalog","host":"example.com","decision":"deny","rule":"default-deny","count":1}'
+
+  - id: sbx-policy-log
+    when:
+      command: [sbx, policy, log]
+    then:
+      output:
+        - "Blocked requests:"
+        - "SANDBOX   TYPE     HOST          PROXY        RULE               REASON        COUNT"
+        - "catalog   network  paste.ee      transparent  deny exfiltration  explicit      1"
+        - "catalog   network  example.com   transparent  default-deny       default-deny  1"
+        - ""
+        - "Allowed requests:"
+        - "SANDBOX   TYPE     HOST                 PROXY    RULE               COUNT"
+        - "catalog   network  api.anthropic.com    forward  allow AI services  42"
+
+  # `--json` emits the compact JSONL record - exactly the line Docker's Datadog
+  # Logs connector POSTs to the intake URL (it lands under source:docker-audit).
+  - id: sbx-audit-log-json
+    when:
+      command: [sbx, audit, log]
+      args: { --json: { any: true } }
+    then:
+      output:
+        - '{"timestamp":"2026-05-28T19:15:00Z","decision":"AUDIT_DECISION_DENY","username":"jordandoe","org_name":"{{ state.org }}","sandbox":"product-catalog","resource_id":"paste.ee:443","deny_reason":["deny exfiltration"],"action_type":"network_egress"}'
+
+  # The user-attributed audit trail (auditkit). One sealed JSONL record per
+  # decision, with the signed-in user, org, and session - what ships to a SIEM.
+  - id: sbx-audit-log
+    when:
+      command: [sbx, audit, log]
+    then:
+      output:
+        - "{"
+        - '  "timestamp": "2026-05-28T19:15:00Z",'
+        - '  "decision": "AUDIT_DECISION_DENY",'
+        - '  "username": "jordandoe",'
+        - '  "org_name": "{{ state.org }}",'
+        - '  "sandbox": "product-catalog",'
+        - '  "resource_id": "paste.ee:443",'
+        - '  "deny_reason": ["deny exfiltration"],'
+        - '  "action_type": "network_egress"'
+        - "}"
+
+  # ===========================================================================
+  # Governance API path: the setup-policies.sh helper
+  # ===========================================================================
+  - id: setup-policies
+    when:
+      command: [bash]
+      args: { 0: { oneOf: [setup-policies.sh, ./setup-policies.sh] } }
+    then:
+      state: { governance.active: true, policy.denyExfil: true, policy.denyCreds: true }
+      output:
+        - "Authenticating to the Docker AI Governance API..."
+        - { text: "Creating policy 'Labspace AI Governance - network'", delay: sync }
+        - "  + allow AI services   (allow)"
+        - "  + allow Docker services (allow)"
+        - "  + deny exfiltration   (deny)"
+        - { text: "Creating policy 'Labspace AI Governance - filesystem'", delay: sync }
+        - "  + allow workdemo      (allow, read+write)"
+        - "  + deny credentials    (deny, read+write)"
+        - ""
+        - "Done. Both policies applied to {{ state.org }}. Run `sbx policy reset` to sync locally."
+
+  # ---- Raw AI Governance API (https://hub.docker.com/v2). Matched by the HTTP
+  # method flag (-X GET / -X POST) so the URL can carry the learner's own {{ state.org }}.
+  # GET → list policies for the org.
+  - id: api-list-policies
+    when:
+      command: [curl]
+      args: { -X: { oneOf: [GET] } }
+    then:
+      output:
+        - '{'
+        - '  "data": ['
+        - '    {'
+        - '      "id": "pol_06evsmp24r1pg71cm8500546pkbn",'
+        - '      "name": "Labspace AI Governance - network",'
+        - '      "org": "{{ state.org }}",'
+        - '      "type": "allowlist_v0",'
+        - '      "created_at": "2026-08-05T00:00:00Z"'
+        - '    },'
+        - '    {'
+        - '      "id": "pol_07fwtnq35s2qh82dn9611657qlco",'
+        - '      "name": "Labspace AI Governance - filesystem",'
+        - '      "org": "{{ state.org }}",'
+        - '      "type": "allowlist_v0",'
+        - '      "created_at": "2026-08-05T00:00:00Z"'
+        - '    }'
+        - '  ]'
+        - '}'
+
+  # POST → create a policy. Returns 201 with the new resource.
+  - id: api-create-policy
+    when:
+      command: [curl]
+      args: { -X: { oneOf: [POST] } }
+    then:
+      state: { governance.active: true, policy.denyExfil: true, policy.denyCreds: true }
+      output:
+        - "HTTP/2 201"
+        - '{'
+        - '  "id": "pol_09hxwps57u4sj04fp1833879tneq",'
+        - '  "name": "Labspace AI Governance - network",'
+        - '  "org": "{{ state.org }}",'
+        - '  "type": "allowlist_v0",'
+        - '  "created_at": "2026-08-05T00:00:00Z"'
+        - '}'
+
+  # ===========================================================================
+  # Section 7 - MCP Governance
+  # ===========================================================================
+  - id: export-mcp-url
+    when:
+      command: [export]
+      args:
+        0:
+          oneOf:
+            ["SBX_MCP_URL=http://localhost:8811", "SBX_MCP_URL=https://gateway.docker.com"]
+    then:
+      state: { mcp.enabled: true }
+      output: ["SBX_MCP_URL set. The `sbx mcp` subtree is now unlocked."]
+
+  - id: export-generic
+    when:
+      command: [export]
+    then:
+      output: []
+
+  - id: sbx-daemon-stop
+    when:
+      command: [sbx, daemon, stop]
+    then:
+      output: ["sbx daemon stopped."]
+
+  - id: sbx-daemon-start
+    when:
+      command: [sbx, daemon, start]
+    then:
+      output: ["sbx daemon started (MCP enabled)."]
+
+  - id: sbx-mcp-help-enabled
+    when:
+      command: [sbx, mcp]
+      args: { --help: true }
+      state: { mcp.enabled: true }
+    then:
+      output:
+        - "Available Commands:"
+        - "  add       Register an MCP server"
+        - "  inspect   Show MCP server details"
+        - "  load      Load a registered server into a running sandbox"
+        - "  ls        List registered MCP servers"
+        - "  rm        Remove a registered MCP server"
+        - "  tools     List a server's tools"
+
+  - id: sbx-mcp-help-disabled
+    when:
+      command: [sbx, mcp]
+      args: { --help: true }
+    then:
+      output: ["SBX_MCP_URL is not set; MCP is not enabled."]
+
+  - id: sbx-mcp-add
+    when:
+      command: [sbx, mcp, add]
+      args: { 0: { any: true } }
+    then:
+      state: { mcp.hasServers: true }
+      output:
+        - "Registered MCP server '{{ args.0 }}'."
+        - "Registration recorded. Attach it with `sbx run <agent> --static-mcp {{ args.0 }}`."
+
+  - id: sbx-mcp-tools-dhi
+    when:
+      command: [sbx, mcp, tools]
+      args: { 0: { oneOf: [remotedhi] } }
+    then:
+      output:
+        - "read-only:  dhi_get_image_details, dhi_get_image_cves, dhi_get_image_packages,"
+        - "            dhi_get_image_attestations, dhi_get_repository, dhi_list_repositories"
+        - "mutating:   dhi_create_mirror, dhi_remove_mirror"
+
+  - id: sbx-mcp-tools
+    when:
+      command: [sbx, mcp, tools]
+      args: { 0: { any: true } }
+    then:
+      output: ["search_wikipedia, get_summary, extract_key_facts, get_links"]
+
+  - id: sbx-mcp-inspect
+    when:
+      command: [sbx, mcp, inspect]
+      args: { 0: { any: true } }
+    then:
+      output:
+        - "Name:      {{ args.0 }}"
+        - "Type:      local stdio (docker run -i --rm mcp/wikipedia-mcp)"
+        - "Note:      inspect shows the registration only - the real proof is inside the agent (/mcp)."
+
+  - id: sbx-mcp-load
+    when:
+      command: [sbx, mcp, load]
+      args: { 0: { any: true } }
+    then:
+      state: { mcp.attached: "{{ args.0 }}" }
+      output: ["Loaded '{{ args.0 }}' into the running sandbox."]
+
+  - id: sbx-mcp-ls-servers
+    when:
+      command: [sbx, mcp, ls]
+      state: { mcp.hasServers: true }
+    then:
+      output:
+        - "NAME         TYPE          TARGET"
+        - "local-wiki   local stdio   docker run -i --rm mcp/wikipedia-mcp"
+        - ""
+        - "Registered servers are proxied behind ONE governed mcp-gateway."
+
+  - id: sbx-mcp-ls-empty
+    when:
+      command: [sbx, mcp, ls]
+    then:
+      output: ["No MCP servers configured. Add one with: sbx mcp add <name> ..."]
+
+  - id: sbx-mcp-rm
+    when:
+      command: [sbx, mcp, rm]
+      args: { 0: { any: true } }
+    then:
+      output: ["Removed MCP server '{{ args.0 }}'."]
+
+  # `/mcp` inside the agent - the agent only ever sees ONE gateway.
+  - id: mcp-slash-dhi
+    when:
+      command: ["/mcp"]
+      state: { mcp.attached: remotedhi }
+    then:
+      output:
+        - "Manage MCP servers"
+        - "1 server"
+        - "  mcp-gateway · connected · 10 tools (remotedhi behind it)"
+
+  - id: mcp-slash-notion
+    when:
+      command: ["/mcp"]
+      state: { mcp.attached: notion }
+    then:
+      output:
+        - "Manage MCP servers"
+        - "1 server"
+        - "  mcp-gateway · connected · notion behind it (tool calls subject to org MCP policy)"
+
+  - id: mcp-slash
+    when:
+      command: ["/mcp"]
+    then:
+      output:
+        - "Manage MCP servers"
+        - "1 server"
+        - "  mcp-gateway · connected · 24 tools"
+        - ""
+        - "Every backend is aggregated behind this ONE governed endpoint - the point of Pillar 2."
+
+  # ===========================================================================
+  # Section 8 - Product Catalog: the autonomous agent containerises a real app
+  # and scans it for vulnerabilities - all inside the governed sandbox.
+  # ===========================================================================
+  - id: git-clone
+    when:
+      command: [git, clone]
+    then:
+      state: { catalog.cloned: true }
+      # Materialise the repo on clone (not just via the seed) so the files exist
+      # even for a returning learner whose saved filesystem predates them. This
+      # mirrors the real ajeetraina/product-catalog-demo-showcase layout: an
+      # Express + Postgres/Kafka/S3 backend under src/, a React (Vite) frontend
+      # under dev/webapp/, DB schema and dev tooling under dev/ - and crucially
+      # NO Dockerfile or Compose. The agent adds the Dockerfile later in the lab.
+      files:
+        - create: product-catalog-demo-showcase/package.json
+          content: |
+            {
+              "name": "container-supported-development",
+              "version": "1.0.0",
+              "scripts": {
+                "start": "node src/index.js",
+                "dev": "nodemon --inspect src/index.js --ignore dev",
+                "dev-container": "nodemon src/index.js",
+                "test": "env-cmd --file .env.node -- jest --detectOpenHandles"
+              },
+              "dependencies": {
+                "@aws-sdk/client-s3": "^3.1030.0",
+                "dotenv": "^17.4.2",
+                "express": "^5.2.1",
+                "kafkajs": "^2.2.4",
+                "multer": "^2.1.1",
+                "node-fetch": "^2",
+                "pg": "^8.20.0"
+              },
+              "devDependencies": {
+                "@testcontainers/kafka": "^11.14.0",
+                "@testcontainers/localstack": "^11.14.0",
+                "@testcontainers/postgresql": "^11.14.0",
+                "jest": "^29.7.0",
+                "nodemon": "^3.1.4",
+                "testcontainers": "^11.14.0"
+              },
+              "packageManager": "yarn@1.22.21"
+            }
+        - create: product-catalog-demo-showcase/src/index.js
+          content: |
+            require("dotenv").config();
+            const os = require("os");
+            const express = require("express");
+            const ProductService = require("./services/ProductService");
+            const multer = require("multer");
+
+            const app = express();
+            app.use(express.json());
+            const upload = multer({ dest: os.tmpdir() });
+
+            app.get("/", (req, res) => res.send("Hello World!!!"));
+
+            app.get("/api/products", async (req, res) => {
+              res.json(await ProductService.getProducts());
+            });
+
+            app.post("/api/products", async (req, res) => {
+              try {
+                const newProduct = await ProductService.createProduct(req.body);
+                res
+                  .status(201)
+                  .header("Location", `/api/products/${newProduct.id}`)
+                  .json(newProduct);
+              } catch (error) {
+                res.status(400).json({ error: error.message });
+              }
+            });
+
+            app.listen(3000, () => console.log("Listening on port 3000"));
+        - create: product-catalog-demo-showcase/src/services/ProductService.js
+          content: |
+            const { Pool } = require("pg");
+            const PublisherService = require("./PublisherService");
+            const StorageService = require("./StorageService");
+
+            const pool = new Pool({
+              host: process.env.POSTGRES_HOST,
+              database: process.env.POSTGRES_DB,
+            });
+
+            async function getProducts() {
+              const { rows } = await pool.query("SELECT * FROM products ORDER BY id");
+              return rows;
+            }
+
+            async function createProduct(product) {
+              const { rows } = await pool.query(
+                "INSERT INTO products (name, upc, price) VALUES ($1, $2, $3) RETURNING *",
+                [product.name, product.upc, product.price],
+              );
+              await PublisherService.publishEvent("products", rows[0]);
+              return rows[0];
+            }
+
+            module.exports = { getProducts, createProduct };
+        - create: product-catalog-demo-showcase/src/services/PublisherService.js
+          content: |
+            const { Kafka } = require("kafkajs");
+
+            const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER] });
+            const producer = kafka.producer();
+
+            async function publishEvent(topic, message) {
+              await producer.connect();
+              await producer.send({ topic, messages: [{ value: JSON.stringify(message) }] });
+            }
+
+            module.exports = { publishEvent };
+        - create: product-catalog-demo-showcase/src/services/InventoryService.js
+          content: |
+            const fetch = require("node-fetch");
+
+            async function getStockLevel(upc) {
+              const res = await fetch(`${process.env.INVENTORY_BASE_URL}/api/${upc}`);
+              return res.json();
+            }
+
+            module.exports = { getStockLevel };
+        - create: product-catalog-demo-showcase/src/services/StorageService.js
+          content: |
+            const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+
+            const client = new S3Client({ endpoint: process.env.AWS_ENDPOINT_URL });
+
+            async function uploadFile(key, body) {
+              await client.send(
+                new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, Body: body }),
+              );
+            }
+
+            module.exports = { uploadFile };
+        - create: product-catalog-demo-showcase/dev/db/1-create-schema.sql
+          content: |
+            CREATE TABLE products (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) NOT NULL,
+              description TEXT,
+              upc VARCHAR(12) NOT NULL UNIQUE,
+              price DECIMAL(10, 2) NOT NULL,
+              has_image BOOLEAN NOT NULL DEFAULT FALSE
+            );
+        - create: product-catalog-demo-showcase/dev/webapp/package.json
+          content: |
+            {
+              "name": "webapp",
+              "private": true,
+              "version": "0.0.0",
+              "type": "module",
+              "scripts": {
+                "dev": "yarn install && vite --host 0.0.0.0",
+                "build": "vite build",
+                "preview": "vite preview"
+              },
+              "dependencies": {
+                "react": "^18.3.1",
+                "react-dom": "^18.3.1"
+              },
+              "devDependencies": {
+                "@vitejs/plugin-react": "^4.3.4",
+                "vite": "^6.0.1"
+              }
+            }
+        - create: product-catalog-demo-showcase/dev/webapp/src/App.jsx
+          content: |
+            import { useEffect, useState } from "react";
+            import ProductRow from "./ProductRow";
+
+            export default function App() {
+              const [products, setProducts] = useState([]);
+
+              useEffect(() => {
+                fetch("/api/products")
+                  .then((r) => r.json())
+                  .then(setProducts);
+              }, []);
+
+              return (
+                <main>
+                  <h1>Product Catalog</h1>
+                  <table>
+                    <tbody>
+                      {products.map((p) => (
+                        <ProductRow key={p.id} product={p} />
+                      ))}
+                    </tbody>
+                  </table>
+                </main>
+              );
+            }
+        - create: product-catalog-demo-showcase/gha.env
+          content: |
+            POSTGRES_HOST=localhost
+            POSTGRES_DB=catalog
+            KAFKA_BROKER=localhost:9092
+            INVENTORY_BASE_URL=http://localhost:8080
+        - create: product-catalog-demo-showcase/README.md
+          content: |
+            # Product Catalog demo showcase
+
+            An Express + Postgres product-catalog API (with Kafka events and S3
+            image storage) plus a React/Vite web app under `dev/webapp/`. Local dev
+            is driven with `yarn dev`.
+
+            > No Dockerfile or Compose file - this repo ships source only. The
+            > container image is built by the agent in this lab.
+      output:
+        - { text: "Cloning into 'product-catalog-demo-showcase'...", delay: pull }
+        - "remote: Enumerating objects: 512, done."
+        - "remote: Counting objects: 100% (512/512), done."
+        - { text: "Receiving objects: 100% (512/512), 1.42 MiB | 4.10 MiB/s, done.", delay: short }
+        - "Resolving deltas: 100% (198/198), done."
+        - "A real Node.js + Express service (Postgres, Kafka, S3) with no Dockerfile yet."
+
+  # The autonomous task: Gordon (docker ai) containerises the app with best
+  # practices. `docker ai "Containerise ..."` (exact positional prompt) matches
+  # the command scenario below; the same `then` is shared (YAML anchor) with an
+  # agent-session fallback so `docker ai` / `docker ai -p "..."` also work.
+  - id: docker-ai-containerise
+    when:
+      command: [docker, ai]
+      prompt: "Containerise the product catalog for production following best practices"
+    then: &gordon_build
+      state: { catalog.containerised: true }
+      files:
+        - create: product-catalog-demo-showcase/Dockerfile
+          content: |
+            # Generated by Gordon (docker ai) - best-practice multi-stage build.
+            # syntax=docker/dockerfile:1
+
+            FROM node:20 AS build
+            WORKDIR /usr/src/app
+            COPY package*.json ./
+            RUN npm ci --omit=dev
+            COPY src ./src
+
+            FROM node:20 AS final
+            ENV NODE_ENV=production
+            WORKDIR /usr/src/app
+            # best practice: run as an unprivileged user, not root
+            RUN useradd --system --uid 10001 appuser
+            COPY --from=build /usr/src/app/node_modules ./node_modules
+            COPY --from=build /usr/src/app/src ./src
+            COPY package.json ./
+            USER appuser
+            EXPOSE 3000
+            CMD ["node", "src/index.js"]
+        - create: product-catalog-demo-showcase/.dockerignore
+          content: |
+            node_modules
+            dev
+            .git
+            .env
+            *.log
+        - create: product-catalog-demo-showcase/compose.yaml
+          content: |
+            # Generated by Gordon (docker ai) - local orchestration for product-catalog.
+            services:
+              app:
+                build: .
+                ports:
+                  - "3000:3000"
+                environment:
+                  POSTGRES_HOST: db
+                  POSTGRES_DB: catalog
+                  KAFKA_BROKER: kafka:9092
+                depends_on:
+                  - db
+                  - kafka
+              db:
+                image: postgres:16
+                environment:
+                  POSTGRES_PASSWORD: postgres
+                  POSTGRES_DB: catalog
+                volumes:
+                  - ./dev/db:/docker-entrypoint-initdb.d
+              kafka:
+                image: apache/kafka:3.7.0
+      output:
+        - "● Gordon: reading the project (package.json, src/) - runtime is Node.js 20."
+        - "● Applying containerisation best practices: multi-stage build, `npm ci`,"
+        - "  non-root user, a .dockerignore, and a minimal final image."
+        - "● Writing Dockerfile + compose.yaml, then building product-catalog:latest..."
+        - { text: "  [+] Building 7.4s  RUN npm ci --omit=dev", delay: build }
+        - { text: "  => resolved 431 packages from the public npm registry", delay: short }
+        - { text: "  => naming to docker.io/library/product-catalog:latest", delay: build }
+        - "● Done. Best-practice image built - but it still sits on the fat node:20 base."
+        - "Next: scan it with `docker scout` to see what that base dragged in."
+
+  # Agent-session fallback: bare `docker ai` REPL turn or `docker ai -p "..."`.
+  - id: agent-containerise
+    when:
+      agent: true
+      promptContains: [containeri]
+    then: *gordon_build
+
+  # Remediation: Gordon switches the base to a Docker Hardened Image and rebuilds.
+  - id: docker-ai-harden
+    when:
+      command: [docker, ai]
+      prompt: "Switch the Dockerfile to a Docker Hardened Image base and rebuild"
+    then: &gordon_harden
+      state: { catalog.hardened: true }
+      files:
+        - create: product-catalog-demo-showcase/Dockerfile
+          content: |
+            # Rewritten by Gordon (docker ai) - hardened, minimal base (Docker Hardened Image).
+            # syntax=docker/dockerfile:1
+
+            FROM dhi.io/node:20-dev AS build
+            WORKDIR /usr/src/app
+            COPY package*.json ./
+            RUN npm ci --omit=dev
+            COPY src ./src
+
+            FROM dhi.io/node:20-hardened AS final
+            ENV NODE_ENV=production
+            WORKDIR /usr/src/app
+            # DHI runtime is already distroless and non-root
+            COPY --from=build /usr/src/app/node_modules ./node_modules
+            COPY --from=build /usr/src/app/src ./src
+            COPY package.json ./
+            EXPOSE 3000
+            CMD ["node", "src/index.js"]
+      output:
+        - "● Gordon: swapping FROM node:20  →  FROM dhi.io/node:20-hardened (minimal, signed)."
+        - "● Building on the -dev variant, copying only node_modules into the distroless runtime."
+        - { text: "  [+] Building 5.4s  RUN npm ci --omit=dev", delay: build }
+        - { text: "  => naming to docker.io/library/product-catalog:latest", delay: build }
+        - "● Done. Re-run `docker scout cves` - the CVE count collapses."
+
+  # Agent-session fallback for the harden turn.
+  - id: agent-harden
+    when:
+      agent: true
+      promptContains: [hardened]
+    then: *gordon_harden
+
+  # Hardened image → almost nothing left to find.
+  - id: docker-scout-cves-hardened
+    when:
+      command: [docker, scout, cves]
+      state: { catalog.hardened: true }
+    then:
+      output:
+        - { text: "    ✓ Image stored for indexing", delay: short }
+        - { text: "    ✓ Indexed 96 packages", delay: scan }
+        - "    ✓ Detected 2 vulnerable packages with a total of 2 vulnerabilities"
+        - ""
+        - "  2 vulnerabilities found in 2 packages"
+        - "    CRITICAL  0     HIGH  0     MEDIUM  1     LOW  1"
+        - ""
+        - "The critical/high findings are gone - the hardened base ships only what the"
+        - "app needs and is patched upstream. Same app, a fraction of the attack surface."
+
+  - id: docker-scout-cves
+    when:
+      command: [docker, scout, cves]
+    then:
+      output:
+        - { text: "    ✓ Image stored for indexing", delay: short }
+        - { text: "    ✓ Indexed 431 packages", delay: scan }
+        - "    ✓ Detected 21 vulnerable packages with a total of 47 vulnerabilities"
+        - ""
+        - "## Packages and Vulnerabilities"
+        - ""
+        - "   1C     0H     0M     0L  wget 1.21"
+        - "pkg:deb/debian/wget@1.21"
+        - ""
+        - "    ✗ CRITICAL CVE-2024-38428 [Improper Handling of Values]"
+        - "      https://scout.docker.com/v/CVE-2024-38428"
+        - "      Affected range : <1.21.4"
+        - "      Fixed version  : 1.21.4"
+        - ""
+        - "   0C     1H     0M     0L  cross-spawn 7.0.3"
+        - "pkg:npm/cross-spawn@7.0.3"
+        - ""
+        - "    ✗ HIGH CVE-2024-21538 [Inefficient Regular Expression Complexity]"
+        - "      https://scout.docker.com/v/CVE-2024-21538"
+        - "      Affected range : <7.0.5"
+        - "      Fixed version  : 7.0.5"
+        - ""
+        - "  47 vulnerabilities found in 21 packages"
+        - "    CRITICAL  2     HIGH  12     MEDIUM  20     LOW  13"
+        - ""
+        - "Most trace back to the fat node:20 base - a hardened base image cuts them sharply."
+
+  - id: docker-scout-quickview
+    when:
+      command: [docker, scout, quickview]
+    then:
+      output:
+        - { text: "    ✓ Image stored for indexing", delay: short }
+        - { text: "    ✓ Indexed 431 packages", delay: scan }
+        - ""
+        - "  Target             │  product-catalog:latest   │    2C    12H    20M    13L"
+        - "    digest           │  6f2a9c3b1d40             │"
+        - "  Base image         │  node:20                  │    2C    11H    18M    11L"
+        - "  Recommended base   │  dhi.io/node:20-hardened  │    0C     0H     1M     1L"
+        - "                     │                           │   -2C   -11H   -17M   -10L"
+        - ""
+        - "A Docker Hardened Image would remove nearly every finding. See the Hardened"
+        - "Images section. Run `docker scout cves product-catalog:latest` for the full list."
+
+  # ===========================================================================
+  # Section 4 - Sign It, Then Gate It (CI). cosign keys, the Scout policy gate,
+  # and `git push` firing the secure-build workflow (rendered in the CI tab).
+  # ===========================================================================
+  - id: cosign-generate
+    when:
+      command: [cosign, generate-key-pair]
+    then:
+      state: { signing.configured: true }
+      output:
+        - "Enter password for private key: ********"
+        - "Private key written to cosign.key"
+        - "Public key written to cosign.pub"
+        - "(keyless signing via Sigstore is used in CI - this is the local equivalent.)"
+
+  # Scout policy gate: PASSES only once the image is on a hardened base.
+  - id: docker-scout-policy-hardened
+    when:
+      command: [docker, scout, policy]
+      state: { catalog.hardened: true }
+    then:
+      output:
+        - { text: "    ✓ Evaluating policies for product-catalog:latest", delay: scan }
+        - "  no-critical-cves     PASSED"
+        - "  require-sbom         PASSED   sbom attestation present"
+        - "  require-provenance   PASSED   slsa-provenance present"
+        - ""
+        - "Policy status: PASSED (3 of 3 policies met)"
+
+  - id: docker-scout-policy
+    when:
+      command: [docker, scout, policy]
+    then:
+      output:
+        - { text: "    ✓ Evaluating policies for product-catalog:latest", delay: scan }
+        - "  no-critical-cves     FAILED   2 critical, 12 high"
+        - "  require-sbom         FAILED   no SBOM attestation present"
+        - "  require-provenance   FAILED   no SLSA provenance attestation"
+        - ""
+        - "Policy status: FAILED (0 of 3 policies met) - harden the base first."
+
+  - id: git-add
+    when:
+      command: [git, add]
+    then:
+      output: []
+
+  - id: git-commit
+    when:
+      command: [git, commit]
+    then:
+      output:
+        - "[main a9d0e42] Add secure-build pipeline (Scout gate + cosign signing)"
+        - " 2 files changed, 41 insertions(+)"
+
+  - id: git-push
+    when:
+      command: [git, push]
+    then:
+      output:
+        - "Enumerating objects: 8, done."
+        - { text: "To github.com:{{ state.org }}/product-catalog.git", delay: sync }
+        - "   7f3a2c1..a9d0e42  main -> main"
+        - ""
+        - "secure-build triggered - the signed, policy-gated pipeline runs in CI."
+
+  - id: git-diff-containerised
+    when:
+      command: [git, diff]
+      state: { catalog.containerised: true }
+    then:
+      output:
+        - "new file: product-catalog-demo-showcase/Dockerfile"
+        - ""
+        - "The agent's work is already in your local tree (bind mount) - review it, then run"
+        - "`cat product-catalog-demo-showcase/Dockerfile` to see what it wrote."
+
+  - id: git-diff
+    when:
+      command: [git, diff]
+    then:
+      output: ["(no changes yet - hand the agent its task first)"]
+
+  # ===========================================================================
+  # MCP tool-call prompts inside the agent
+  # ===========================================================================
+  - id: agent-wiki
+    when:
+      agent: true
+      promptContains: [wikipedia]
+    then:
+      output:
+        - "● Calling mcp-gateway · search_wikipedia(\"Eiffel Tower\")  [approved]"
+        - "● Calling mcp-gateway · get_summary / extract_key_facts"
+        - ""
+        - "The Eiffel Tower is a wrought-iron lattice tower in Paris, completed in 1889."
+        - "Key facts: 330 m tall · 7,300 tonnes · ~7 million visitors/year."
+        - "Chain proven: sbx → mcp-gateway → local-wiki → Wikipedia, every call through the governed gateway."
+
+  - id: agent-notion
+    when:
+      agent: true
+      promptContains: [notion]
+    then:
+      output:
+        - "● Attempting mcp-gateway · notion.list_documents ..."
+        - "✗ Denied by org MCP policy: no `permit` matches (server 'notion' not on the allow-list)."
+        - "The gateway refused the call by default-deny and audited it. (Section 10)"
+
+  - id: agent-dhi-split
+    when:
+      agent: true
+      promptContains: [mirror]
+    then:
+      output:
+        - "● mcp-gateway · dhi_get_image_cves(...)   → allowed, returns CVE data"
+        - "✗ mcp-gateway · dhi_create_mirror(...)    → denied by org MCP policy (mutating tool not permitted)"
+        - ""
+        - "Same server, same session - the Cedar allow-list decides tool by tool: read yes, mutate no."
+
+  # ===========================================================================
+  # Section 10 - Observability: dashboard + audit
+  # ===========================================================================
+  - id: docker-compose-down
+    when:
+      command: [docker, compose, down]
+    then:
+      output: ["[+] Running 2/2  ✔ Stopped and removed."]
+
+  - id: docker-compose
+    when:
+      command: [docker, compose]
+    then:
+      output:
+        - "[+] Running 3/3"
+        - "  ✔ observability-dashboard  Started"
+        - "  ✔ mcp-gateway              Started"
+        - "Dashboard live on http://localhost:8090 (tails daemon.log in real time)."
+
+  - id: open-url
+    when:
+      command: [open]
+      args: { 0: { any: true } }
+    then:
+      output: ["Opening {{ args.0 }} in your browser..."]
+
+  # ===========================================================================
+  # Filler no-ops so ordinary navigation doesn't error out
+  # ===========================================================================
+  # `cd` can't change anything: this simulated shell has no working directory, so
+  # every ls/cat always resolves from the lab root. Say so instead of silently
+  # doing nothing (which reads like a bug), and point at full paths.
+  - id: cd
+    when:
+      command: [cd]
+    then:
+      output:
+        - "Note: this simulated terminal has no working directory - every command runs from the lab root."
+        - "Reference files by full path instead, e.g. `ls product-catalog-demo-showcase` or `cat product-catalog-demo-showcase/package.json`."
+
+  # `tree` renders the cloned project's layout. Authored to match exactly what the
+  # git-clone scenario materialises, so tree / ls / cat stay consistent. Two
+  # variants, containerised first (first-match-wins): once the agent has written
+  # the Dockerfile + compose.yaml, tree shows them; before that, source only.
+  - id: tree-containerised
+    when:
+      command: [tree]
+      state: { catalog.containerised: true }
+    then:
+      output:
+        - "product-catalog-demo-showcase"
+        - "├── .dockerignore"
+        - "├── compose.yaml"
+        - "├── dev"
+        - "│   ├── db"
+        - "│   │   └── 1-create-schema.sql"
+        - "│   └── webapp"
+        - "│       ├── package.json"
+        - "│       └── src"
+        - "│           └── App.jsx"
+        - "├── Dockerfile"
+        - "├── gha.env"
+        - "├── package.json"
+        - "├── README.md"
+        - "└── src"
+        - "    ├── index.js"
+        - "    └── services"
+        - "        ├── InventoryService.js"
+        - "        ├── ProductService.js"
+        - "        ├── PublisherService.js"
+        - "        └── StorageService.js"
+        - ""
+        - "6 directories, 14 files"
+
+  - id: tree
+    when:
+      command: [tree]
+    then:
+      output:
+        - "product-catalog-demo-showcase"
+        - "├── dev"
+        - "│   ├── db"
+        - "│   │   └── 1-create-schema.sql"
+        - "│   └── webapp"
+        - "│       ├── package.json"
+        - "│       └── src"
+        - "│           └── App.jsx"
+        - "├── gha.env"
+        - "├── package.json"
+        - "├── README.md"
+        - "└── src"
+        - "    ├── index.js"
+        - "    └── services"
+        - "        ├── InventoryService.js"
+        - "        ├── ProductService.js"
+        - "        ├── PublisherService.js"
+        - "        └── StorageService.js"
+        - ""
+        - "6 directories, 11 files"
+
+  - id: mkdir
+    when:
+      command: [mkdir]
+    then:
+      output: []
+
+  # Agent binaries open a session. Per the spec, `claude -p "<prompt>"` (and
+  # `codex -p ...`) runs ONE agent turn against the agent scenarios above
+  # (matched by promptContains) and exits without entering the REPL - which is
+  # how every `claude -p "..."` block in the lab is dispatched and content-routed.
+  # Gordon (docker ai): bare `docker ai` opens a REPL; `docker ai -p "..."` runs
+  # one turn. Specific `docker ai "<exact prompt>"` scenarios above match first.
+  - id: docker-ai-session
+    when:
+      command: [docker, ai]
+    then:
+      session:
+        prompt: "gordon> "
+        intro:
+          - "Ask Gordon (Docker AI) ready. Enter a task, or type /exit to leave."
+        outro:
+          - "Gordon session ended."
+
+  - id: claude-session
+    when:
+      command: [claude]
+    then:
+      session:
+        prompt: "claude> "
+        intro:
+          - "Claude Code ready. Enter a task, or type /exit to leave."
+        outro:
+          - "Claude session ended."
+
+  - id: codex-session
+    when:
+      command: [codex]
+    then:
+      session:
+        prompt: "codex> "
+        intro:
+          - "Codex ready. Enter a task, or type /exit to leave."
+        outro:
+          - "Codex session ended."
+
+  - id: gemini-session
+    when:
+      command: [gemini]
+    then:
+      session:
+        prompt: "gemini> "
+        intro:
+          - "Gemini CLI ready. Enter a task, or type /exit to leave."
+        outro:
+          - "Gemini session ended."
+
+  # Catch-all for any prompt typed in a session that no specific agent scenario
+  # handles - keeps a free-form session graceful instead of erroring.
+  - id: agent-fallback
+    when:
+      agent: true
+    then:
+      output:
+        - "● I can only act on the scripted tasks in this lab. Follow the section's"
+        - "  suggested prompt (e.g. finding secrets, containerising, calling a tool)."
